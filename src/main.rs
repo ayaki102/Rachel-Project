@@ -1,4 +1,4 @@
-use rachel_project::file_ops;
+use rachel_project::tmpl_ops;
 
 use clap::{Arg, Command};
 
@@ -34,7 +34,7 @@ fn main() {
                 std::process::exit(1);
             }
 
-            match file_ops::make_template(filename) {
+            match tmpl_ops::make_template(filename) {
                 Ok(_) => println!("Template file generated: {}", filename),
                 Err(e) => {
                     println!("error {}", e);
@@ -46,7 +46,7 @@ fn main() {
         Some(("parse", sub_m)) => {
             let filename = sub_m.get_one::<String>("file").unwrap();
             println!("Parsing file: {}", filename);
-            file_ops::read_file(filename)
+            tmpl_ops::read_file(filename)
                 .map(|c| println!("{:#?}", c))
                 .unwrap_or_else(|e| {
                     eprintln!("{}", e);
