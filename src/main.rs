@@ -1,5 +1,4 @@
 use rachel_project::tmpl_cont;
-use std::fmt;
 use std::io::Result;
 use std::io::prelude::*;
 use std::{fs::File, io::Write};
@@ -50,8 +49,12 @@ fn main() {
         Some(("parse", sub_m)) => {
             let filename = sub_m.get_one::<String>("file").unwrap();
             println!("Parsing file: {}", filename);
-            let conts = read_file(filename);
-            println!("{:#?}", conts);
+            read_file(filename)
+                .map(|c| println!("{:#?}", c))
+                .unwrap_or_else(|e| {
+                    eprintln!("{}", e);
+                    std::process::exit(1);
+                });
         }
 
         _ => {
