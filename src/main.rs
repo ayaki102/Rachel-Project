@@ -1,4 +1,5 @@
 use rachel_project::tmpl_cont;
+use std::fmt;
 use std::io::Result;
 use std::io::prelude::*;
 use std::{fs::File, io::Write};
@@ -52,6 +53,7 @@ fn main() {
             let conts = read_file(filename);
             println!("{:#?}", conts);
         }
+
         _ => {
             println!("No valid subcommand provided. Use 'gen' or 'parse'.");
         }
@@ -65,7 +67,7 @@ fn make_template(file: &String) -> std::io::Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum Keywords {
     Target(String),
@@ -147,5 +149,27 @@ fn read_file(file: &String) -> Result<Vec<Keywords>> {
         }
     }
 
+    validate_me_senpai(&syntax_vec)?;
+
     Ok(syntax_vec)
+}
+
+// if user specified scope more than once.. kill them
+fn validate_me_senpai(contents: &Vec<Keywords>) -> Result<Vec<Keywords>> {
+    let mut counter = 0;
+    for content in contents.iter() {
+        match content {
+            Keywords::ScopeVec(_) | Keywords::ScopeStr(_) => counter += 1,
+            _ => (),
+        }
+    }
+
+    if counter > 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "invalid usage",
+        ));
+    } else {
+        Ok(contents.to_vec())
+    }
 }
