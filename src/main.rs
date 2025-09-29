@@ -1,3 +1,136 @@
+use rachel_project::tmpl_cont;
+use std::io::Result;
+use std::io::prelude::*;
+use std::{fs::File, io::Write};
+
+use clap::{Arg, Command};
+
 fn main() {
-    println!("test");
+    let matches = Command::new("rachel")
+        .subcommand(
+            Command::new("gen")
+                .about("Generate a file for manual input")
+                .arg(
+                    Arg::new("file")
+                        .help("File to generate")
+                        .required(true) // must provide a file
+                        .index(1), // positional argument
+                ),
+        )
+        .subcommand(
+            Command::new("parse").about("Parse an existing file").arg(
+                Arg::new("file")
+                    .help("File to parse")
+                    .required(true)
+                    .index(1),
+            ),
+        )
+        .get_matches();
+
+    match matches.subcommand() {
+        // ------------ handle generation
+        Some(("gen", sub_m)) => {
+            let filename = sub_m.get_one::<String>("file").unwrap();
+
+            if !filename.ends_with(".rchl") {
+                eprintln!("Invalid file type. it must end .rchl suffix");
+                std::process::exit(1);
+            }
+
+            match make_template(filename) {
+                Ok(_) => println!("Template file generated: {}", filename),
+                Err(e) => {
+                    println!("error {}", e);
+                    std::process::exit(2)
+                }
+            }
+        }
+        // ------------ handle parsin
+        Some(("parse", sub_m)) => {
+            let filename = sub_m.get_one::<String>("file").unwrap();
+            println!("Parsing file: {}", filename);
+            let conts = read_file(filename);
+            println!("{:#?}", conts);
+        }
+        _ => {
+            println!("No valid subcommand provided. Use 'gen' or 'parse'.");
+        }
+    }
+}
+
+fn make_template(file: &String) -> std::io::Result<()> {
+    let mut file = File::create(file)?;
+    file.write_all(tmpl_cont::render())?;
+
+    Ok(())
+}
+
+#[derive(Debug)]
+#[allow(dead_code)]
+enum Keywords {
+    Target(String),
+    ScopeVec(Vec<String>),
+    ScopeStr(String),
+    Timeout(i64),
+    Comment,
+}
+
+fn read_file(file: &String) -> Result<Vec<Keywords>> {
+    let mut syntax_vec: Vec<Keywords> = Vec::new();
+    let mut file = File::open(file)?;
+    let mut contents = String::new();
+
+    file.read_to_string(&mut contents)?;
+    let lines = contents.split_terminator('\n');
+
+    for (i, line) in lines.enumerate() {
+        let line_conts: Vec<&str> = line.splitn(2, '=').collect(); // only split into 2 parts
+        let keyword = line_conts.get(0).map(|s| s.trim()).unwrap_or("");
+        let value = line_conts.get(1).map(|s| s.trim());
+
+        match keyword {
+            "target" => {
+                if let Some(v) = value {
+                    syntax_vec.push(Keywords::Target(v.to_string()));
+                } else {
+                    eprintln!("{i}: Missing value for 'target'");
+                }
+            }
+            "scope" => {
+                if let Some(v) = value {
+                    if v.starts_with('[') {
+                        // strip [ ] and split by comma
+                        let items: Vec<String> = v
+                            .trim_matches(&['[', ']'][..])
+                            .split(',')
+                            .map(|s| s.trim().to_string())
+                            .collect();
+                        syntax_vec.push(Keywords::ScopeVec(items));
+                    } else {
+                        syntax_vec.push(Keywords::ScopeStr(v.to_string()));
+                    }
+                } else {
+                    eprintln!("{i}: Missing value for 'scope'");
+                }
+            }
+            "timeout" => {
+                if let Some(v) = value {
+                    match v.parse::<i64>() {
+                        Ok(num) => syntax_vec.push(Keywords::Timeout(num)),
+                        Err(_) => eprintln!("{i}: Invalid integer for 'timeout': {v}"),
+                    }
+                } else {
+                    eprintln!("{i}: Missing value for 'timeout'");
+                }
+            }
+            "//" => syntax_vec.push(Keywords::Comment),
+            "" => continue, // skip empty lines
+            // adding empty lines will be pretty easy lol
+            other => {
+                eprintln!("{i}: Invalid keyword '{other}' in file {:?}", file);
+            }
+        }
+    }
+
+    Ok(syntax_vec)
 }
