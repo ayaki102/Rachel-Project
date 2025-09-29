@@ -83,8 +83,20 @@ fn read_file(file: &String) -> Result<Vec<Keywords>> {
     file.read_to_string(&mut contents)?;
     let lines = contents.split_terminator('\n');
 
-    for (i, line) in lines.enumerate() {
-        let line_conts: Vec<&str> = line.splitn(2, '=').collect(); // only split into 2 parts
+    for (i, raw_line) in lines.enumerate() {
+        // separate code from comment
+        let mut parts = raw_line.splitn(2, "//");
+        let code = parts.next().unwrap().trim();
+        let has_comment = parts.next().is_some();
+
+        // full-line comment
+        if code.is_empty() {
+            syntax_vec.push(Keywords::Comment);
+            continue;
+        }
+
+        // split keyword and value
+        let line_conts: Vec<&str> = code.splitn(2, '=').collect();
         let keyword = line_conts.get(0).map(|s| s.trim()).unwrap_or("");
         let value = line_conts.get(1).map(|s| s.trim());
 
@@ -99,11 +111,11 @@ fn read_file(file: &String) -> Result<Vec<Keywords>> {
             "scope" => {
                 if let Some(v) = value {
                     if v.starts_with('[') {
-                        // strip [ ] and split by comma
                         let items: Vec<String> = v
                             .trim_matches(&['[', ']'][..])
                             .split(',')
                             .map(|s| s.trim().to_string())
+                            .filter(|s| !s.is_empty())
                             .collect();
                         syntax_vec.push(Keywords::ScopeVec(items));
                     } else {
@@ -123,12 +135,15 @@ fn read_file(file: &String) -> Result<Vec<Keywords>> {
                     eprintln!("{i}: Missing value for 'timeout'");
                 }
             }
-            "//" => syntax_vec.push(Keywords::Comment),
-            "" => continue, // skip empty lines
-            // adding empty lines will be pretty easy lol
+            "" => continue, // empty line
             other => {
                 eprintln!("{i}: Invalid keyword '{other}' in file {:?}", file);
             }
+        }
+
+        // record comment if line had both code + comment
+        if has_comment {
+            syntax_vec.push(Keywords::Comment);
         }
     }
 
