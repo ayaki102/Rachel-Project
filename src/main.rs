@@ -167,10 +167,10 @@ fn validate_me_senpai(contents: &Vec<Keywords>) -> Result<Vec<Keywords>> {
         }
     }
 
-    if counter > 0 {
+    if counter > 1 {
         return Err(std::io::Error::new(
             std::io::ErrorKind::Other,
-            "invalid usage",
+            "Error: 'Scope' defined more than once",
         ));
     } else {
         Ok(contents.to_vec())
