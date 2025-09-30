@@ -2,11 +2,11 @@
 pub mod template_conetnts {
     // this will groowwwww :3
     pub fn render() -> &'static [u8] {
-        let template: &'static [u8] = b"target='http://target.com'
-scope=['/endpoint1', '/endpoint2']
-//scope=crawl 
-// ^ pick one you need
-timeout=10 //10 seconds
+        let template: &'static [u8] = b"target=http://target.com
+scope=[/endpoint1, /endpoint2]
+#scope=crawl 
+# ^ pick one you need
+# timeout=10 #10 seconds
 ";
         template
     }
@@ -47,7 +47,7 @@ pub mod tmpl_ops {
 
         for (i, raw_line) in lines.enumerate() {
             // separate code from comment
-            let mut parts = raw_line.splitn(2, "//");
+            let mut parts = raw_line.splitn(2, "#");
             let code = parts.next().unwrap().trim();
             let has_comment = parts.next().is_some();
 

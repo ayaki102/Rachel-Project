@@ -47,7 +47,12 @@ fn main() {
             let filename = sub_m.get_one::<String>("file").unwrap();
             println!("Parsing file: {}", filename);
             tmpl_ops::read_file(filename)
-                .map(|c| println!("{:#?}", c))
+                .map(|c| {
+                    // println!("{:#?} hallo", c);
+                    println!("{:#?}", c[1])
+
+                    // scanner scanner::Scanner::new(target, endpoints, timeout);
+                })
                 .unwrap_or_else(|e| {
                     eprintln!("{}", e);
                     std::process::exit(1);
