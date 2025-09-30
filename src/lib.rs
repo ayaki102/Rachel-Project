@@ -153,7 +153,7 @@ pub mod scanner {
     pub struct Scanner {
         pub target: Url,
         pub endpoints: Vec<Url>,
-        pub timeout: Duration,
+        pub timeout: Option<Duration>,
         // you can add a reqwest::Client here when integrating network code
         // pub client: reqwest::Client,
         pub user_agent: Option<String>,
@@ -162,7 +162,7 @@ pub mod scanner {
 
     impl Scanner {
         /// Construct scanner; if endpoints is None, start with empty Vec.
-        pub fn new(target: Url, endpoints: Option<Vec<Url>>, timeout: Duration) -> Self {
+        pub fn new(target: Url, endpoints: Option<Vec<Url>>, timeout: Option<Duration>) -> Self {
             Self {
                 target,
                 endpoints: endpoints.unwrap_or_default(),
@@ -184,6 +184,59 @@ pub mod scanner {
             new.set_path(&path);
             Some(new)
         }
+    }
+
+    use crate::tmpl_ops::Keywords;
+
+    // i'm so proud of this
+    pub fn build_scanner(contents: Vec<Keywords>) -> Scanner {
+        let mut target_str: Option<String> = None;
+        let mut endpoints_strs: Vec<String> = Vec::new();
+        let mut timeout_secs: Option<i64> = None;
+
+        for cont in contents {
+            match cont {
+                Keywords::Target(t) => target_str = Some(t),
+                Keywords::ScopeVec(v) => endpoints_strs = v,
+                Keywords::Timeout(i) => timeout_secs = Some(i),
+                _ => {}
+            }
+        }
+
+        let target = match target_str {
+            Some(t) => match Url::parse(&t) {
+                Ok(url) => url,
+                Err(e) => {
+                    eprintln!("Invalid target URL '{}': {}", t, e);
+                    std::process::exit(1);
+                }
+            },
+            None => {
+                eprintln!("No target URL provided");
+                std::process::exit(1);
+            }
+        };
+
+        let endpoints: Option<Vec<Url>> = if endpoints_strs.is_empty() {
+            None
+        } else {
+            Some(
+                endpoints_strs
+                    .iter()
+                    .filter_map(|s| match Url::parse(s) {
+                        Ok(url) => Some(url),
+                        Err(e) => {
+                            eprintln!("Skipping invalid endpoint URL '{}': {}", s, e);
+                            None
+                        }
+                    })
+                    .collect(),
+            )
+        };
+
+        let timeout = Some(Duration::from_secs(timeout_secs.unwrap_or(0) as u64));
+
+        Scanner::new(target, endpoints, timeout)
     }
 
     /// Results per request / page

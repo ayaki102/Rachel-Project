@@ -1,4 +1,7 @@
-use rachel_project::tmpl_ops;
+use rachel_project::{
+    scanner::build_scanner,
+    tmpl_ops::{self},
+};
 
 use clap::{Arg, Command};
 
@@ -46,17 +49,17 @@ fn main() {
         Some(("parse", sub_m)) => {
             let filename = sub_m.get_one::<String>("file").unwrap();
             println!("Parsing file: {}", filename);
-            tmpl_ops::read_file(filename)
-                .map(|c| {
-                    // println!("{:#?} hallo", c);
-                    println!("{:#?}", c[1])
-
-                    // scanner scanner::Scanner::new(target, endpoints, timeout);
-                })
-                .unwrap_or_else(|e| {
-                    eprintln!("{}", e);
+            // don't know how i'll use this cont variable yet
+            let contents = match tmpl_ops::read_file(filename) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Failed to read file '{}': {}", filename, e);
                     std::process::exit(1);
-                });
+                }
+            };
+
+            // this will save me from hell i created
+            let _scanner = build_scanner(contents);
         }
 
         _ => {
