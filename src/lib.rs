@@ -1,5 +1,5 @@
 // module for generating contents of template file for user to fill out
-pub mod template_conetnts {
+pub mod template_contents {
     // this will groowwwww :3
     pub fn render() -> &'static [u8] {
         let template: &'static [u8] = b"target=http://target.com
@@ -14,14 +14,14 @@ scope=[/endpoint1, /endpoint2]
 
 pub mod tmpl_ops {
 
-    use crate::template_conetnts;
+    use crate::template_contents;
     use std::io::Result;
     use std::io::prelude::*;
     use std::{fs::File, io::Write};
 
     pub fn make_template(file: &String) -> std::io::Result<()> {
         let mut file = File::create(file)?;
-        file.write_all(template_conetnts::render())?;
+        file.write_all(template_contents::render())?;
 
         Ok(())
     }
@@ -39,6 +39,7 @@ pub mod tmpl_ops {
     // change this to be just file contents to test this lol
     pub fn read_file(file: &String) -> Result<Vec<Keywords>> {
         let mut syntax_vec: Vec<Keywords> = Vec::new();
+        let file_path = file.clone();
         let mut file = File::open(file)?;
         let mut contents = String::new();
 
@@ -99,7 +100,7 @@ pub mod tmpl_ops {
                 }
                 "" => continue, // empty line
                 other => {
-                    eprintln!("{i}: Invalid keyword '{other}' in file {:?}", file);
+                    eprintln!("{i}: Invalid keyword '{other}' in file {:?}", file_path);
                 }
             }
 
@@ -137,9 +138,15 @@ pub mod tmpl_ops {
 
 pub mod scanner {
     use crate::tmpl_ops::Keywords;
+    use futures::stream::{FuturesUnordered, StreamExt};
+    use reqwest::redirect::Policy;
+    use scraper::{Html, Selector};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
+    use std::collections::{HashSet, VecDeque};
+    use std::sync::Arc;
     use std::time::Duration;
+    use tokio::sync::Semaphore;
     use url::Url;
 
     /// Whether we've visited an endpoint
@@ -185,6 +192,313 @@ pub mod scanner {
             new.set_path(&path);
             Some(new)
         }
+
+        /// Async run: crawl (or use provided endpoints) and scan pages.
+        /// - If endpoints vector is non-empty, only scan those.
+        /// - Otherwise, BFS-crawl from target up to `max_pages` and `max_depth`.
+        /// Returns Vec<ScanResults>
+        pub async fn run(&self) -> Vec<ScanResults> {
+            // Configurable params (tune as needed or add to Scanner struct)
+            let concurrency_limit = 10usize; // concurrent requests
+            let max_pages = 500usize; // absolute limit
+            let max_depth = 4usize; // how deep from start
+            let snippet_len = 1024usize;
+
+            // Build reqwest client honoring timeout, user agent, follow_redirects
+            let mut client_builder = reqwest::Client::builder();
+            if let Some(dur) = self.timeout {
+                client_builder = client_builder.timeout(dur);
+            }
+            if self.follow_redirects {
+                client_builder = client_builder.redirect(Policy::limited(10));
+            } else {
+                client_builder = client_builder.redirect(Policy::none());
+            }
+            if let Some(ua) = &self.user_agent {
+                client_builder = client_builder.user_agent(ua.clone());
+            }
+
+            let client = match client_builder.build() {
+                Ok(c) => Arc::new(c),
+                Err(e) => {
+                    eprintln!("Failed to build HTTP client: {}", e);
+                    return Vec::new();
+                }
+            };
+
+            // If endpoints provided, scan only those
+            let endpoints_to_scan: Vec<Url> = if !self.endpoints.is_empty() {
+                self.endpoints.clone()
+            } else {
+                // Crawl and produce endpoints
+                self.crawl_graph(client.clone(), max_pages, max_depth).await
+            };
+
+            // Limit concurrency
+            let sem = Arc::new(Semaphore::new(concurrency_limit));
+            let mut futs = FuturesUnordered::new();
+
+            for url in endpoints_to_scan.into_iter() {
+                let client = client.clone();
+                let sem = sem.clone();
+                // Acquire permit inside spawned future so concurrency bound applies
+                futs.push(tokio::spawn(async move {
+                    let _permit = sem.acquire().await;
+                    scan_single(&client, &url, snippet_len).await
+                }));
+            }
+
+            let mut results = Vec::new();
+            while let Some(res) = futs.next().await {
+                match res {
+                    Ok(scan_res) => results.push(scan_res),
+                    Err(e) => {
+                        // join error
+                        eprintln!("Task join error: {}", e);
+                    }
+                }
+            }
+
+            results
+        }
+
+        async fn crawl_graph(
+            &self,
+            client: Arc<reqwest::Client>,
+            max_pages: usize,
+            max_depth: usize,
+        ) -> Vec<Url> {
+            let mut discovered: Vec<Url> = Vec::new();
+            let mut visited: HashSet<String> = HashSet::new();
+            let mut q: VecDeque<(Url, usize)> = VecDeque::new();
+
+            q.push_back((self.target.clone(), 0));
+            visited.insert(self.target.as_str().to_string());
+
+            while let Some((url, depth)) = q.pop_front() {
+                // stop if reached limits
+                if discovered.len() >= max_pages {
+                    break;
+                }
+                // attempt fetch
+                match client.get(url.clone()).send().await {
+                    Ok(resp) => {
+                        // collect url
+                        discovered.push(url.clone());
+
+                        // parse only html bodies for links if depth < max_depth
+                        if depth < max_depth {
+                            if let Ok(body) = resp.text().await {
+                                let base = url.clone();
+                                let links = extract_links(&body, &base);
+                                for link in links.into_iter() {
+                                    // normalization: remove fragment, query maybe keep? Keep query but canonicalize
+                                    let mut link = link.clone();
+                                    link.set_fragment(None);
+
+                                    // scope decision: same origin (host+port+scheme)
+                                    if !same_origin(&self.target, &link) {
+                                        continue;
+                                    }
+                                    let key = link.as_str().to_string();
+                                    if visited.contains(&key) {
+                                        continue;
+                                    }
+                                    visited.insert(key.clone());
+                                    q.push_back((link, depth + 1));
+                                }
+                            }
+                        }
+                    }
+                    Err(_e) => {
+                        // ignore fetch errors during crawl, but still continue
+                    }
+                }
+            }
+
+            discovered
+        }
+    }
+
+    async fn scan_single(client: &reqwest::Client, url: &Url, snippet_len: usize) -> ScanResults {
+        let mut res = ScanResults {
+            url: url.clone(),
+            status_code: 0,
+            body_snippet: None,
+            input_fields: Vec::new(),
+            headers: HashMap::new(),
+            errors: None,
+        };
+
+        let resp_res = client.get(url.clone()).send().await;
+        match resp_res {
+            Ok(resp) => {
+                res.status_code = resp.status().as_u16();
+                // headers
+                for (k, v) in resp.headers().iter() {
+                    if let Ok(s) = v.to_str() {
+                        res.headers.insert(k.to_string(), s.to_string());
+                    } else {
+                        res.headers
+                            .insert(k.to_string(), "<binary or non-utf8>".to_string());
+                    }
+                }
+                // read body if text/html
+                let maybe_ct = res.headers.get("content-type").cloned();
+                let is_html = maybe_ct
+                    .as_deref()
+                    .map(|ct| ct.contains("text/html") || ct.contains("application/xhtml+xml"))
+                    .unwrap_or(false);
+
+                if is_html {
+                    match resp.text().await {
+                        Ok(body) => {
+                            let snippet: String = body.chars().take(snippet_len).collect();
+                            res.body_snippet = Some(snippet);
+                            // parse input fields
+                            res.input_fields = parse_input_fields(&body);
+                        }
+                        Err(e) => {
+                            res.errors = Some(format!("Failed to read body: {}", e));
+                        }
+                    }
+                } else {
+                    // try to read some bytes as snippet (best-effort)
+                    if let Ok(body) = resp.text().await {
+                        let snippet: String = body.chars().take(snippet_len).collect();
+                        res.body_snippet = Some(snippet);
+                    }
+                }
+            }
+            Err(e) => {
+                res.errors = Some(e.to_string());
+            }
+        }
+
+        res
+    }
+
+    /// Extract anchor links (hrefs) from HTML and resolve relative to base.
+    /// Returns Vec<Url> for well-formed absolute urls.
+    fn extract_links(html: &str, base: &Url) -> Vec<Url> {
+        let mut links = Vec::new();
+        let doc = Html::parse_document(html);
+
+        if let Ok(sel) = Selector::parse("a[href], link[href], script[src], img[src], form[action]")
+        {
+            for el in doc.select(&sel) {
+                let attr = if el.value().name() == "form" {
+                    "action"
+                } else {
+                    "href"
+                };
+                // script/img use src; the selector included them but the attr might be src; try both
+                let maybe = el
+                    .value()
+                    .attr("href")
+                    .or_else(|| el.value().attr("src"))
+                    .or_else(|| el.value().attr("action"));
+                if let Some(href) = maybe {
+                    if href.trim().is_empty() {
+                        continue;
+                    }
+                    if let Ok(joined) = base.join(href) {
+                        links.push(joined);
+                    }
+                }
+            }
+        }
+        links
+    }
+
+    /// Check same-origin between two Urls (scheme, host, port)
+    fn same_origin(a: &Url, b: &Url) -> bool {
+        a.scheme() == b.scheme()
+            && a.host_str() == b.host_str()
+            && a.port_or_known_default() == b.port_or_known_default()
+    }
+
+    /// Parse input fields from HTML (input, textarea, select)
+    fn parse_input_fields(html: &str) -> Vec<InputField> {
+        let mut fields = Vec::new();
+        let doc = Html::parse_document(html);
+        let selector = Selector::parse("input,textarea,select").unwrap();
+
+        for el in doc.select(&selector) {
+            let val = el.value();
+            let tag = val.name().to_string();
+            let mut field = InputField::default();
+            field.tag_name = tag.clone();
+
+            // common attributes
+            field.input_type = val.attr("type").map(|s| s.to_string());
+            field.name = val.attr("name").map(|s| s.to_string());
+            field.id = val.attr("id").map(|s| s.to_string());
+            field.value = val.attr("value").map(|s| s.to_string());
+            field.placeholder = val.attr("placeholder").map(|s| s.to_string());
+            field.title = val.attr("title").map(|s| s.to_string());
+            field.autocomplete = val.attr("autocomplete").map(|s| s.to_string());
+            // classes
+            field.classes = val
+                .attr("class")
+                .map(|s| s.split_whitespace().map(|x| x.to_string()).collect());
+
+            // attributes map (capture everything)
+            let mut attrs = HashMap::new();
+            for (k, v) in val.attrs() {
+                attrs.insert(k.to_string(), v.to_string());
+            }
+            field.attributes = Some(attrs);
+
+            // select options
+            if tag == "select" {
+                let mut options = Vec::new();
+                let opt_sel = Selector::parse("option").unwrap();
+                // To get inner options we need to search within this element's HTML substring.
+                // Simpler: parse full document and find options that have a parent select with matching attributes;
+                // for brevity, just collect all options on document level and include text if `name` matches.
+                for opt in el.select(&opt_sel) {
+                    let text = opt.text().collect::<Vec<_>>().join("");
+                    if let Some(v) = opt.value().attr("value") {
+                        options.push(v.to_string());
+                    } else {
+                        options.push(text);
+                    }
+                }
+                field.options = Some(options);
+            }
+
+            // basic flags
+            field.required = val.attr("required").map(|_| true);
+            field.readonly = val.attr("readonly").map(|_| true);
+            field.disabled = val.attr("disabled").map(|_| true);
+            // min/max/maxlength
+            field.maxlength = val.attr("maxlength").and_then(|s| s.parse::<u64>().ok());
+            field.minlength = val.attr("minlength").and_then(|s| s.parse::<u64>().ok());
+            field.min = val.attr("min").map(|s| s.to_string());
+            field.max = val.attr("max").map(|s| s.to_string());
+            field.pattern = val.attr("pattern").map(|s| s.to_string());
+            field.step = val.attr("step").map(|s| s.to_string());
+            field.accept = val.attr("accept").map(|s| s.to_string());
+            field.multiple = val.attr("multiple").map(|_| true);
+
+            // outer_html: best-effort by rendering the element's HTML
+            // Scraper doesn't have outer_html directly; grab element.html().
+            field.outer_html = Some(el.html());
+
+            // Evaluate sensitivity heuristics (name, id, value entropy)
+            field.evaluate_sensitivity();
+
+            // push the evaluated field
+            fields.push(field);
+        }
+
+        fields
+    }
+
+    // Helper to check if a string looks like a full URL
+    fn is_full_url(s: &str) -> bool {
+        s.starts_with("http://") || s.starts_with("https://")
     }
 
     // i'm so proud of this
@@ -240,7 +554,7 @@ pub mod scanner {
 
     /// Results per request / page
     #[derive(Debug, Serialize, Deserialize)]
-    pub struct Results {
+    pub struct ScanResults {
         pub url: Url,
         pub status_code: u16,
         pub body_snippet: Option<String>, // trimmed outer HTML or snippet
