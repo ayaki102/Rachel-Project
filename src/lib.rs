@@ -115,7 +115,7 @@ pub mod tmpl_ops {
     }
 
     // if user specified scope more than once.. kill them
-    fn validate_me_senpai(contents: &Vec<Keywords>) -> Result<Vec<Keywords>> {
+    pub fn validate_me_senpai(contents: &Vec<Keywords>) -> Result<Vec<Keywords>> {
         let mut counter = 0;
         for content in contents.iter() {
             match content {
@@ -408,9 +408,9 @@ pub mod scanner {
 
 #[cfg(test)]
 mod tests {
-    use crate::scanner::build_scanner;
-    use crate::tmpl_ops::Keywords;
-    use std::time::Duration;
+
+    use crate::{scanner::build_scanner, tmpl_ops::Keywords, tmpl_ops::validate_me_senpai};
+    use std::{io, time::Duration};
 
     #[test]
     fn test_build_scanner_basic() {
@@ -443,5 +443,49 @@ mod tests {
 
         assert!(scanner.endpoints.is_empty());
         assert_eq!(scanner.timeout.unwrap(), Duration::from_secs(0));
+    }
+
+    #[test]
+    fn test_validate_me_senpai_ok() {
+        let contents = vec![
+            Keywords::Target("https://example.com".to_string()),
+            Keywords::ScopeVec(vec!["/x".to_string()]),
+            Keywords::Timeout(10),
+        ];
+
+        let result = validate_me_senpai(&contents);
+        assert!(result.is_ok());
+        let validated = result.unwrap();
+
+        assert_eq!(validated.len(), contents.len());
+        assert!(matches!(validated[1], Keywords::ScopeVec(_)));
+    }
+
+    #[test]
+    fn test_validate_me_senpai_fail() {
+        let contents = vec![
+            Keywords::ScopeVec(vec!["/x".to_string()]),
+            Keywords::ScopeStr("/y".to_string()),
+        ];
+
+        let result = validate_me_senpai(&contents);
+        assert!(result.is_err());
+
+        let err = result.unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Other);
+        assert_eq!(err.to_string(), "Error: 'Scope' defined more than once");
+    }
+
+    #[test]
+    fn test_validate_me_senpai_no_scope() {
+        let contents = vec![
+            Keywords::Target("https://example.com".to_string()),
+            Keywords::Timeout(5),
+        ];
+
+        let result = validate_me_senpai(&contents);
+        assert!(result.is_ok());
+        let validated = result.unwrap();
+        assert_eq!(validated.len(), contents.len());
     }
 }
