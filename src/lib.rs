@@ -136,6 +136,7 @@ pub mod tmpl_ops {
 }
 
 pub mod scanner {
+    use crate::tmpl_ops::Keywords;
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
     use std::time::Duration;
@@ -154,8 +155,7 @@ pub mod scanner {
         pub target: Url,
         pub endpoints: Vec<Url>,
         pub timeout: Option<Duration>,
-        // you can add a reqwest::Client here when integrating network code
-        // pub client: reqwest::Client,
+        pub client: reqwest::Client,
         pub user_agent: Option<String>,
         pub follow_redirects: bool,
     }
@@ -167,6 +167,7 @@ pub mod scanner {
                 target,
                 endpoints: endpoints.unwrap_or_default(),
                 timeout,
+                client: reqwest::Client::new(),
                 user_agent: None,
                 follow_redirects: true,
             }
@@ -185,8 +186,6 @@ pub mod scanner {
             Some(new)
         }
     }
-
-    use crate::tmpl_ops::Keywords;
 
     // i'm so proud of this
     pub fn build_scanner(contents: Vec<Keywords>) -> Scanner {
@@ -404,5 +403,45 @@ pub mod scanner {
                 self.tag_name, self.name, self.id, self.input_type, self.probable_secret
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::scanner::build_scanner;
+    use crate::tmpl_ops::Keywords;
+    use std::time::Duration;
+
+    #[test]
+    fn test_build_scanner_basic() {
+        let target_kw = Keywords::Target("https://example.com".to_string());
+        let timeout_kw = Keywords::Timeout(10);
+        let endpoints_kw = Keywords::ScopeVec(vec![
+            "https://example.com/x".to_string(),
+            "https://example.com/y".to_string(),
+        ]);
+
+        let scanner = build_scanner(vec![target_kw, timeout_kw, endpoints_kw]);
+
+        assert_eq!(scanner.target.as_str(), "https://example.com/");
+
+        let endpoints = &scanner.endpoints;
+        assert_eq!(endpoints.len(), 2);
+        assert_eq!(endpoints[0].as_str(), "https://example.com/x");
+        assert_eq!(endpoints[1].as_str(), "https://example.com/y");
+
+        assert_eq!(scanner.timeout.unwrap(), Duration::from_secs(10));
+
+        assert!(scanner.user_agent.is_none());
+        assert!(scanner.follow_redirects);
+    }
+
+    #[test]
+    fn test_build_scanner_defaults() {
+        let target_kw = Keywords::Target("https://example.com".to_string());
+        let scanner = build_scanner(vec![target_kw]);
+
+        assert!(scanner.endpoints.is_empty());
+        assert_eq!(scanner.timeout.unwrap(), Duration::from_secs(0));
     }
 }
